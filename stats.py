@@ -16,6 +16,7 @@ from settings import KUBE_CONFIG, MYSQL_HOST, MYSQL_PORT, MYSQL_USER, \
 _client = None
 _container_metrics_map = dict()
 _mysql_client = None
+_cluster_name = None
 
 BATCH = str(int(datetime.now().timestamp()))
 
@@ -201,6 +202,7 @@ def list_container_res_by_pod(pod_data):
     con_reses = []
     for c in pod_data.spec.containers:
         con_res = ContainerResource()
+        con_res.cluster = _cluster_name
         con_res.node = pod_data.spec.node_name
         con_res.namespace = pod_data.metadata.namespace
         con_res.pod = pod_data.metadata.name
@@ -249,6 +251,8 @@ def init_k8s_config():
     :return:
     """
     config.load_kube_config(KUBE_CONFIG)
+    global _cluster_name
+    _cluster_name = config.list_kube_config_contexts()[1]["context"]["cluster"]
 
 
 def get_k8s_client():
