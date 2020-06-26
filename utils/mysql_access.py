@@ -32,11 +32,12 @@ class MySQLAccess(object):
             user=self._user,
             passwd=self._passwd,
             db=self._db,
-            charset=self._charset
+            charset=self._charset,
+            autocommit=True
         )
         self._inited = True
 
-    def execute(self, sql, params=None, need_fetch=True, commit=False):
+    def execute(self, sql, params=None, need_fetch=True):
         """执行sql语句并返回结果
 
         Example:
@@ -52,9 +53,7 @@ class MySQLAccess(object):
 
         assert self._inited, "not initialized!"
         cursor = self._connection.cursor()
-        cursor.execute(sql, params, multi=True)
-        if commit:
-            self._connection.commit()
+        cursor.execute(sql, params)
         result = cursor.fetchall() if need_fetch else None
         cursor.close()
         return result

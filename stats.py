@@ -235,7 +235,7 @@ def list_container_res_by_namespace(ns):
     :return:
     """
     k8scli = get_k8s_client()
-    data = k8scli.list_namespaced_pod(ns)
+    data = k8scli.list_namespaced_pod(ns, field_selector="status.phase=Running")
 
     container_res_list = []
     for pod in data.items:
@@ -326,22 +326,18 @@ def save_to_mysql(data):
                    "cpu_request, cpu_limit, cpu_used, " \
                    "mem_request, mem_limit, mem_used, sample_time) VALUES "
 
-    # FIXME: 插入数据库不生效
     sql = sql_template
     for i, val in enumerate(data):
-        sql += val.to_sql_tuple(batch=BATCH) + ","
+        sql += val.to_sql_tuple(batch=BATCH, cluster=_cluster_name) + ","
+        # 每插入100条打印进度通知
         if i + 1 > 0 and (i + 1) % 100 == 0:
             sql = sql[0:-1]
-            sql += "; COMMIT;"
-            print(sql)
-            mycli.execute(sql, need_fetch=False, commit=True)
+            mycli.execute(sql, need_fetch=False)
             sql = sql_template
             print("inserted: {}".format(i+1))
         if i == len(data) - 1:
             sql = sql[0:-1]
-            sql += "; COMMIT;"
-            print(sql)
-            mycli.execute(sql, need_fetch=False, commit=True)
+            mycli.execute(sql, need_fetch=False)
             print("inserted: {}".format(i+1))
 
 
@@ -402,7 +398,7 @@ if __name__ == "__main__":
     main_fun()
     end = datetime.now()
 
-    print("ALL FINISHED\nstart: {}\nend: {}\nused: {}".format(
+    print("\nALL FINISHED\nstart: {}\nend: {}\nused: {}".format(
         start, end, end - start
     ))
     pass
