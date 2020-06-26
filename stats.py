@@ -1,14 +1,17 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
-import json
+import csv
 from datetime import datetime
+import os
+from os import path
 
 import dateutil.parser
 from kubernetes import config, client
 from kubernetes.client import CoreV1Api
 
 from utils.mysql_access import MySQLAccess
-from settings import KUBE_CONFIG, MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DB
+from settings import KUBE_CONFIG, MYSQL_HOST, MYSQL_PORT, MYSQL_USER, \
+    MYSQL_PASSWORD, MYSQL_DB, PERSISTENCE_TYPE, CSV_DIR
 
 _client = None
 _container_metrics_map = dict()
@@ -17,8 +20,8 @@ _mysql_client = None
 BATCH = str(int(datetime.now().timestamp()))
 
 
-def format_cpu(cpu):
-    """规整cpu单位为n
+def format_cpu(cpu, with_unit=True):
+    """规整cpu，默认单位为n
     1n = 10^-9
     1u = 10^-6
     1m = 10^-3
@@ -26,21 +29,23 @@ def format_cpu(cpu):
     :return:
     """
 
+    unit = "n" if with_unit else ""
+
     if cpu is None:
         return cpu
 
     if cpu.endswith("n"):
-        return cpu
+        return cpu[:-1] + unit
     if cpu.endswith("m"):
         value = int(cpu[0:-1]) * 1000
-        return str(value) + "n"
+        return str(value) + unit
     if cpu.isdigit():
         value = int(cpu) * 1000 * 1000
-        return str(value) + "n"
+        return str(value) + unit
 
 
-def format_mem(mem):
-    """规整memory单位为Ki
+def format_mem(mem, with_unit=True):
+    """规整memory，默认单位为Ki
     1 Mi = 1024 Ki
     1 Gi = 1024 Mi
 
@@ -55,29 +60,31 @@ def format_mem(mem):
     :return:
     """
 
+    unit = "Ki" if with_unit else ""
+
     if mem is None:
         return mem
 
     if mem.endswith("Ki"):
-        return mem
+        return mem[:-2] + unit
     if mem.endswith("Mi"):
         value = int(mem[0:-2]) * 1024
-        return str(value) + "Ki"
+        return str(value) + unit
     if mem.endswith("Gi"):
         value = int(mem[0:-2]) * 1024 * 1024
-        return str(value) + "Ki"
+        return str(value) + unit
 
     if mem.endswith("K"):
         value = round(int(mem[:-1]) / 1.024)
-        return str(value) + "Ki"
+        return str(value) + unit
 
     if mem.endswith("M"):
         value = round(int(mem[:-1]) * 1000 / 1.024)
-        return str(value) + "Ki"
+        return str(value) + unit
 
     if mem.endswith("G"):
         value = round(int(mem[:-1]) * 1000 * 1000 / 1.024)
-        return str(value) + "Ki"
+        return str(value) + unit
 
 
 class ContainerResource(object):
@@ -101,19 +108,27 @@ class ContainerResource(object):
         self.mem_used = mem_used
         self.sample_time = sample_time
 
-    def to_dict(self):
+    @classmethod
+    def fields(cls):
+        return [
+            "cluster", "node", "namespace", "pod", "container",
+            "cpu_request", "cpu_limit", "cpu_used",
+            "mem_request", "mem_limit", "mem_used", "sample_time",
+        ]
+
+    def to_dict(self, with_unit=True):
         return {
             "cluster": self.cluster,
             "node": self.node,
             "namespace": self.namespace,
             "pod": self.pod,
             "container": self.container,
-            "cpu_request": format_cpu(self.cpu_request),
-            "cpu_limit": format_cpu(self.cpu_limit),
-            "cpu_used": format_cpu(self.cpu_used),
-            "mem_request": format_mem(self.mem_request),
-            "mem_limit": format_mem(self.mem_limit),
-            "mem_used": format_mem(self.mem_used),
+            "cpu_request": format_cpu(self.cpu_request, with_unit),
+            "cpu_limit": format_cpu(self.cpu_limit, with_unit),
+            "cpu_used": format_cpu(self.cpu_used, with_unit),
+            "mem_request": format_mem(self.mem_request, with_unit),
+            "mem_limit": format_mem(self.mem_limit, with_unit),
+            "mem_used": format_mem(self.mem_used, with_unit),
             "sample_time": self.sample_time,
         }
 
@@ -295,6 +310,71 @@ def get_mysql_client():
     return _mysql_client
 
 
+def save_to_mysql(data):
+    """保存数据至mysql
+
+    """
+    mycli = get_mysql_client()
+
+    sql_template = "INSERT INTO " \
+                   "k8s_stats.kt_container_stats " \
+                   "(batch, cluster, node, namespace, pod, container, " \
+                   "cpu_request, cpu_limit, cpu_used, " \
+                   "mem_request, mem_limit, mem_used, sample_time) VALUES "
+
+    # FIXME: 插入数据库不生效
+    sql = sql_template
+    for i, val in enumerate(data):
+        sql += val.to_sql_tuple(batch=BATCH) + ","
+        if i + 1 > 0 and (i + 1) % 100 == 0:
+            sql = sql[0:-1]
+            sql += "; COMMIT;"
+            print(sql)
+            mycli.execute(sql, need_fetch=False, commit=True)
+            sql = sql_template
+            print("inserted: {}".format(i+1))
+        if i == len(data) - 1:
+            sql = sql[0:-1]
+            sql += "; COMMIT;"
+            print(sql)
+            mycli.execute(sql, need_fetch=False, commit=True)
+            print("inserted: {}".format(i+1))
+
+
+def save_to_csv(data):
+    """保存数据至本地csv
+
+    """
+    BASE_DIR = path.dirname(path.abspath(__file__))
+    now_str = datetime.now().strftime('%Y%m%d%H%M%S')
+    filename = "stats" + now_str + ".csv"
+    full_path = path.realpath(path.join(BASE_DIR, CSV_DIR, filename))
+    if not path.exists(path.dirname(full_path)):
+        os.mkdir(path.dirname(full_path))
+
+    with open(full_path, "w+", newline="") as csvfile:
+        fields = ContainerResource.fields()
+        writer = csv.DictWriter(csvfile, fieldnames=fields)
+
+        writer.writeheader()
+        for item in data:
+            assert isinstance(item, ContainerResource)
+            writer.writerow(item.to_dict(False))
+
+    print("saved data to file: {}".format(full_path))
+
+
+def persistence(data):
+    """数据持久化
+
+    """
+    print("start to persistence data")
+    {
+        "csv": save_to_csv,
+        "mysql": save_to_mysql,
+    }[PERSISTENCE_TYPE](data)
+
+
 def main_fun():
     init_k8s_config()
     k8scli = get_k8s_client()
@@ -307,35 +387,10 @@ def main_fun():
         con_reses.extend(list_container_res_by_namespace(ns))
         print("finish load pod of namespace: {}".format(ns))
 
-    # 数据持久化至数据
-    print("finish stats, total: {}\n"
-          "start to insert to DB".format(len(con_reses)))
+    print("finish stats, total: {}".format(len(con_reses)))
 
-    mycli = get_mysql_client()
-
-    sql_template = "INSERT INTO " \
-                   "k8s_stats.kt_container_stats " \
-                   "(batch, cluster, node, namespace, pod, container, " \
-                   "cpu_request, cpu_limit, cpu_used, " \
-                   "mem_request, mem_limit, mem_used, sample_time) VALUES "
-
-    # FIXME: 插入数据库不生效
-    sql = sql_template
-    for i, val in enumerate(con_reses):
-        sql += val.to_sql_tuple(batch=BATCH) + ","
-        if i + 1 > 0 and (i + 1) % 100 == 0:
-            sql = sql[0:-1]
-            sql += "; COMMIT;"
-            print(sql)
-            mycli.execute(sql, need_fetch=False, commit=True)
-            sql = sql_template
-            print("inserted: {}".format(i+1))
-        if i == len(con_reses) - 1:
-            sql = sql[0:-1]
-            sql += "; COMMIT;"
-            print(sql)
-            mycli.execute(sql, need_fetch=False, commit=True)
-            print("inserted: {}".format(i+1))
+    # 持久化数据
+    persistence(con_reses)
 
 
 if __name__ == "__main__":
