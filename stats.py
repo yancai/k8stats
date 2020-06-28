@@ -37,11 +37,14 @@ def format_cpu(cpu, with_unit=True):
 
     if cpu.endswith("n"):
         return cpu[:-1] + unit
-    if cpu.endswith("m"):
+    if cpu.endswith("u"):
         value = int(cpu[0:-1]) * 1000
         return str(value) + unit
+    if cpu.endswith("m"):
+        value = int(cpu[0:-1]) * 1000 * 1000
+        return str(value) + unit
     if cpu.isdigit():
-        value = int(cpu) * 1000 * 1000
+        value = int(cpu) * 1000 * 1000 * 1000
         return str(value) + unit
 
 
